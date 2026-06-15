@@ -31,4 +31,23 @@ gh extension install tnagatomi/gh-wtrm
 gh wtrm
 ```
 
-Operates on the repository containing the current working directory.
+Operates on the repository containing the current working directory. It opens
+an interactive TUI listing that repo's worktrees with PR-derived badges
+(`[pr-merged]`, `[pr-open]`, `[pr-closed]`, `[uncommitted]`, `[locked]`,
+`[no-dir]`, `[primary]`).
+
+Keys: `space` select, `s` select all safe-to-remove, `/` filter, `d` delete
+(with confirmation), `y` copy branch name, `r` reload, `?` help, `q`/`esc`
+quit.
+
+A worktree is "safe to remove" only when its branch has a **merged** PR whose
+commit set contains the branch's local HEAD commit (plus no uncommitted work,
+not locked, and not the primary or current worktree). A directory that is
+already gone is treated as a prune target.
+
+### Flags
+
+```
+--state merged   # default: only merged PRs count as deletable
+--state closed   # opt-in: also accept PRs closed without merging (and merged)
+```

@@ -1,0 +1,6 @@
+# Compiled gh extension binary
+/gh-wtrm
+
+# Test and build artifacts
+*.out
+*.test

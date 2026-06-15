@@ -2,7 +2,17 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
+
+	"github.com/tnagatomi/gh-wtrm/internal/gh"
+	"github.com/tnagatomi/gh-wtrm/internal/loader"
+	"github.com/tnagatomi/gh-wtrm/internal/tui"
 )
 
 // Version is overridden at build time via -ldflags.
@@ -21,11 +31,55 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		RunE:          runTUI,
 	}
+	cmd.Flags().String("state", "merged", "PR state that counts as deletable: 'merged' (default) or 'closed' (also accepts merged)")
 	return cmd
 }
 
-// runTUI is the root action. Wiring to the loader and TUI lands in a later
-// chunk; for now it is a placeholder so the command is runnable.
 func runTUI(cmd *cobra.Command, args []string) error {
-	return nil
+	stateStr, _ := cmd.Flags().GetString("state")
+	state, err := parseState(stateStr)
+	if err != nil {
+		return err
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	repo, err := loader.Load(ctx, wd, state)
+	if err != nil {
+		return err
+	}
+
+	// reload re-queries git and PRs on the `r` key and after a delete.
+	reload := func() tui.ReloadResult {
+		r, err := loader.Load(ctx, wd, state)
+		if err != nil {
+			return tui.ReloadResult{FatalErr: err}
+		}
+		return tui.ReloadResult{Worktrees: r.Worktrees, PRError: r.PRError}
+	}
+
+	m := tui.NewModel(repo.Path, repo.Worktrees, repo.PRError).WithReload(reload)
+	_, err = tea.NewProgram(m).Run()
+	return err
+}
+
+// parseState maps the --state flag to a PR scan state. Only 'merged' and
+// 'closed' are valid; 'closed' is the opt-in that also accepts merged PRs.
+func parseState(s string) (gh.PullRequestState, error) {
+	switch strings.ToLower(s) {
+	case "merged":
+		return gh.Merged, nil
+	case "closed":
+		return gh.Closed, nil
+	default:
+		return 0, fmt.Errorf("invalid --state %q: want 'merged' or 'closed'", s)
+	}
 }

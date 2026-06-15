@@ -1,0 +1,20 @@
+name: release
+
+# Build and publish precompiled binaries for the gh extension on tag push.
+# `gh extension install tnagatomi/gh-wtrm` downloads the matching binary.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cli/gh-extension-precompile@v2
+        with:
+          go_version_file: go.mod
