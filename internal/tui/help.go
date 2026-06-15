@@ -61,7 +61,16 @@ var helpGroups = []helpGroup{
 			{"y", "copy focused branch name to clipboard"},
 			{"/", "start incremental filter"},
 			{"d", "open delete confirmation"},
+			{"r", "reload worktrees and PR state"},
 			{"esc", "clear filter, or quit"},
+		},
+	},
+	{
+		title: "Delete confirmation",
+		entries: []helpEntry{
+			{"y", "confirm deletion"},
+			{"n  /  esc", "cancel back to the list"},
+			{"space", "toggle [Also delete branches]"},
 		},
 	},
 	{

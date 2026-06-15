@@ -33,9 +33,30 @@ const (
 	screenConfirmDelete
 )
 
+// DeleteFunc performs the deletion batch; injectable so tests avoid real git.
+type DeleteFunc func(repoPath string, targets []worktree.Worktree, alsoBranches bool) []deleter.Failure
+
+// ReloadResult is the outcome of refreshing the worktree list.
+type ReloadResult struct {
+	Worktrees []worktree.Worktree
+	// PRError reports a degraded PR fetch; the list is still shown but
+	// conservative.
+	PRError error
+	// FatalErr means the list could not be refreshed at all; the previous
+	// list is kept.
+	FatalErr error
+}
+
+// ReloadFunc re-queries the repository (git + PRs). Injected by the CLI;
+// nil disables the `r` reload and post-delete refresh.
+type ReloadFunc func() ReloadResult
+
 type Model struct {
 	repoPath string
 	screen   screenID
+
+	deleteFn DeleteFunc
+	reload   ReloadFunc
 
 	worktreeTable     table.Model
 	worktreeSorted    []worktree.Worktree
@@ -61,6 +82,9 @@ type Model struct {
 	deleteFailures       []deleter.Failure
 	deleting             bool
 
+	reloading   bool
+	reloadError error
+
 	helpVisible bool
 
 	termWidth  int
@@ -68,10 +92,24 @@ type Model struct {
 }
 
 // NewModel builds the model for one repository's worktrees, opening directly
-// on the list screen.
+// on the list screen. Deletion defaults to the real deleter; reload is
+// disabled until WithReload is called.
 func NewModel(repoPath string, wts []worktree.Worktree, prError error) Model {
-	m := Model{repoPath: repoPath, prError: prError}
+	m := Model{repoPath: repoPath, prError: prError, deleteFn: deleter.Delete}
 	return m.buildWorktreeScreen(wts)
+}
+
+// WithReload sets the reload callback used by the `r` key and the post-delete
+// refresh.
+func (m Model) WithReload(fn ReloadFunc) Model {
+	m.reload = fn
+	return m
+}
+
+// WithDeleteFunc overrides the deletion function (used in tests).
+func (m Model) WithDeleteFunc(fn DeleteFunc) Model {
+	m.deleteFn = fn
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -87,6 +125,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case deleteCompleteMsg:
+		return m.applyDeleteResult(msg)
+	case reloadCompleteMsg:
+		return m.applyReloadResult(msg)
 	}
 	return m.delegateToTable(msg)
 }
@@ -131,9 +173,20 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			return m.copyFocusedBranch()
 		case "d":
-			// Delete confirmation lands in the next chunk.
+			if len(m.selected) > 0 {
+				return m.enterConfirmDelete(), nil
+			}
 			return m, nil
+		case "r":
+			if m.reload == nil || m.reloading {
+				return m, nil
+			}
+			m.reloading = true
+			m.reloadError = nil
+			return m, m.reloadCmd()
 		}
+	case screenConfirmDelete:
+		return m.handleConfirmKey(msg)
 	}
 	return m.delegateToTable(msg)
 }
@@ -152,6 +205,8 @@ func (m Model) View() tea.View {
 	switch {
 	case m.helpVisible:
 		content = helpView()
+	case m.screen == screenConfirmDelete:
+		content = m.confirmDeleteView()
 	default:
 		content = m.worktreeView()
 	}
@@ -170,8 +225,14 @@ func (m Model) worktreeView() string {
 		titleText += "    /" + m.filterQuery + cursor
 	}
 	title := lipgloss.NewStyle().Bold(true).Render(titleText)
-	help := faintStyle.Render("[↑/k] up  [↓/j] down  [space] select  [s] select safe  [/] filter  [d] delete  [y] copy branch  [?] help  [esc/q] quit")
+	help := faintStyle.Render("[↑/k] up  [↓/j] down  [space] select  [s] select safe  [/] filter  [d] delete  [y] copy branch  [r] reload  [?] help  [esc/q] quit")
 	body := renderWorktreeTable(m.worktreeTable, m.worktreeVisible)
+	if m.reloading {
+		body += "\n" + faintStyle.Render("⏳ Reloading...")
+	}
+	if m.reloadError != nil {
+		body += "\n" + faintStyle.Render(fmt.Sprintf("⚠ reload failed: %v", m.reloadError))
+	}
 	if m.prError != nil {
 		body += "\n" + faintStyle.Render(fmt.Sprintf("⚠ PR lookup failed (%v) — nothing is shown as safe to remove", m.prError))
 	}
