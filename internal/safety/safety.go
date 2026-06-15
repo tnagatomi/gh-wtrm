@@ -34,6 +34,10 @@ type Input struct {
 	// Locked marks a deliberately locked worktree; gh-wtrm treats a lock as
 	// a refusal to delete (conservative, unlike wtclean's force-unlock).
 	Locked bool
+	// NoDir marks a worktree whose working directory is gone (prunable).
+	// There is no local work left to lose, so it is deletable without PR
+	// proof — pruning only removes git's stale admin entry.
+	NoDir bool
 	// HasUntrackedFiles and HasTrackedChanges flag uncommitted work that
 	// removal would destroy.
 	HasUntrackedFiles bool
@@ -53,6 +57,12 @@ func DeleteStatus(in Input, state gh.PullRequestState) Status {
 	// be removed by git; a lock is an explicit refusal.
 	if in.IsMain || in.IsCurrent || in.Locked {
 		return NotDeletable
+	}
+
+	// The directory is already gone — there is nothing local to lose, so a
+	// prune is always safe regardless of PR state.
+	if in.NoDir {
+		return Deletable
 	}
 
 	// Any uncommitted work — tracked or untracked — would be lost.

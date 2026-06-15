@@ -72,6 +72,34 @@ func TestClosedStateOptsInClosedAndMerged(t *testing.T) {
 	}
 }
 
+func TestNoDirIsDeletableWithoutPR(t *testing.T) {
+	// A worktree whose directory is gone has no local work to lose; pruning
+	// it only removes git's stale admin entry, so it is deletable even with
+	// no PR proof.
+	in := Input{NoDir: true}
+	if got := DeleteStatus(in, gh.Merged); got != Deletable {
+		t.Errorf("no-dir worktree: got %v, want Deletable", got)
+	}
+}
+
+func TestNoDirStillBlockedByLockOrMain(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		mutate func(*Input)
+	}{
+		{"locked", func(in *Input) { in.Locked = true }},
+		{"main", func(in *Input) { in.IsMain = true }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			in := Input{NoDir: true}
+			c.mutate(&in)
+			if got := DeleteStatus(in, gh.Merged); got != NotDeletable {
+				t.Errorf("no-dir + %s: got %v, want NotDeletable", c.name, got)
+			}
+		})
+	}
+}
+
 func TestIsFullyMergedStateMatrix(t *testing.T) {
 	in := Input{Commits: []string{"h"}}
 	cases := []struct {
