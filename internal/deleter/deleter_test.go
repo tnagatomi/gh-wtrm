@@ -192,6 +192,49 @@ func TestDeleteParallelPreservesOrderAndRemovesAll(t *testing.T) {
 	}
 }
 
+func TestDeleteRejectsForgedGitdirDirectory(t *testing.T) {
+	requireGit(t)
+	repo, _ := setupWorktree(t, "feat")
+
+	// A directory that is not a registered worktree of repo but carries a
+	// .git file with a gitdir: pointer, mimicking a linked worktree.
+	fake := filepath.Join(filepath.Dir(repo), "fake")
+	if err := os.MkdirAll(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fake, ".git"), []byte("gitdir: /tmp/nowhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fake, "important.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	failures := Delete(repo, []worktree.Worktree{{Path: fake, Branch: "x"}}, false)
+
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("a forged worktree must be rejected with a remove failure, got %v", failures)
+	}
+	if _, err := os.Stat(filepath.Join(fake, "important.txt")); err != nil {
+		t.Errorf("a directory not registered to the repo must not be deleted: %v", err)
+	}
+}
+
+func TestDeleteRejectsForeignWorktree(t *testing.T) {
+	requireGit(t)
+	repo, _ := setupWorktree(t, "feat")
+	// A genuine linked worktree, but of a different repository.
+	_, foreign := setupWorktree(t, "other")
+
+	failures := Delete(repo, []worktree.Worktree{{Path: foreign, Branch: "other"}}, false)
+
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("a worktree of another repo must be rejected, got %v", failures)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Errorf("a foreign worktree must not be deleted: %v", err)
+	}
+}
+
 func TestDeleteNeverRemovesRepoItself(t *testing.T) {
 	requireGit(t)
 	repo, _ := setupWorktree(t, "feat")
