@@ -108,8 +108,14 @@ func (g worktreeGuard) ownsLiveWorktree(dir string) bool {
 	if err != nil {
 		return false
 	}
-	backDir := filepath.Dir(strings.TrimSpace(string(back)))
-	return resolvePath(backDir) == resolvePath(dir)
+	// The back-pointer is relative to admin when the worktree uses relative
+	// links (git worktree add --relative-paths / worktree.useRelativePaths);
+	// anchor it there before comparing.
+	backPath := strings.TrimSpace(string(back))
+	if !filepath.IsAbs(backPath) {
+		backPath = filepath.Join(admin, backPath)
+	}
+	return resolvePath(filepath.Dir(backPath)) == resolvePath(dir)
 }
 
 // worktreeAdminDir resolves dir/.git and returns the linked-worktree admin

@@ -311,6 +311,34 @@ func TestDeleteRejectsReoccupiedWorktreePath(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesRelativePathsWorktree(t *testing.T) {
+	requireGit(t)
+	repo := filepath.Join(t.TempDir(), "repo")
+	mustRun(t, "git", "init", "-q", "-b", "main", repo)
+	mustRun(t, "git", "-C", repo, "config", "user.email", "test@example.com")
+	mustRun(t, "git", "-C", repo, "config", "user.name", "Test")
+	mustRun(t, "git", "-C", repo, "commit", "--allow-empty", "-q", "-m", "init")
+	wtPath := filepath.Join(filepath.Dir(repo), "wt-rel")
+
+	// --relative-paths makes git store relative gitdir links (both the
+	// worktree's .git and the admin back-pointer). Skip on git too old for it.
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "--relative-paths", "-q", "-b", "rel", wtPath).CombinedOutput(); err != nil {
+		t.Skipf("git worktree add --relative-paths unsupported: %v\n%s", err, out)
+	}
+
+	failures := Delete(repo, []worktree.Worktree{{Path: wtPath, Branch: "rel"}}, false)
+
+	if len(failures) != 0 {
+		t.Fatalf("a relative-paths worktree should be removed cleanly, got %v", failures)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("relative-paths worktree directory should be gone: stat err=%v", err)
+	}
+	if listWorktrees(t, repo) != 1 {
+		t.Errorf("porcelain should list only the primary after remove")
+	}
+}
+
 func TestDeleteNeverRemovesRepoItself(t *testing.T) {
 	requireGit(t)
 	repo, _ := setupWorktree(t, "feat")
