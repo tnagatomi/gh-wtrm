@@ -6,9 +6,7 @@ package deleter
 import (
 	"fmt"
 	"os/exec"
-	"runtime"
 	"slices"
-	"sync"
 
 	"github.com/tnagatomi/gh-wtrm/internal/worktree"
 )
@@ -37,16 +35,9 @@ func (f Failure) Error() string {
 	return fmt.Sprintf("%s %s: %v", f.Op, f.Path, f.Err)
 }
 
-// removal holds the per-target outcome of the parallel remove phase, indexed
-// back to its position in targets so failures reassemble in caller order.
-type removal struct {
-	idx      int
-	failures []Failure
-	removed  bool // remove succeeded → branch deletion is eligible
-}
-
 // Delete runs the deletion plan against targets in repoPath. Each target is
-// independent; a failure on one does not stop the rest.
+// independent; a failure on one does not stop the rest, and failures surface
+// in targets order.
 //
 // Worktree removal is always forced (gh-poi semantics): the safety model has
 // already cleared each safe target, and a manually selected dirty target is
@@ -56,48 +47,25 @@ type removal struct {
 // and rebase merges leave the local branch "unmerged"), so -d would wrongly
 // refuse. The safety model already proved the work is in a merged PR.
 //
-// Removal is fanned out across a bounded worker pool since each target
-// touches its own directory and .git/worktrees entry. Branch deletion runs
-// serially afterwards because it mutates packed-refs, which concurrent
-// `git branch -D` calls would contend on. A single `git worktree prune` is
-// appended once when any target was no-dir, since prune is repo-wide.
+// Removal runs serially: `git worktree remove` validates and rewrites the
+// repo-wide .git/worktrees directory on every call, so concurrent removals
+// against the same repository race (one remove enumerates entries while
+// another is deleting one). Interactive deletes are a handful of worktrees,
+// so serial removal costs nothing. A single `git worktree prune` is appended
+// once when any target was no-dir, since prune is repo-wide.
 func Delete(repoPath string, targets []worktree.Worktree, alsoBranches bool) []Failure {
+	var failures []Failure
 	anyNoDir := false
-	var procIdx []int
-	for i, w := range targets {
+	for _, w := range targets {
 		if slices.Contains(w.Badges, worktree.BadgeNoDir) {
 			anyNoDir = true
 			continue
 		}
-		procIdx = append(procIdx, i)
-	}
-
-	results := make([]removal, len(procIdx))
-	if len(procIdx) > 0 {
-		workers := min(len(procIdx), max(runtime.GOMAXPROCS(0), 4))
-		sem := make(chan struct{}, workers)
-		var wg sync.WaitGroup
-		for j, i := range procIdx {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				results[j] = removeWorktree(repoPath, i, targets[i])
-			}()
-		}
-		wg.Wait()
-	}
-
-	var failures []Failure
-	for _, r := range results {
-		failures = append(failures, r.failures...)
-		if r.removed && alsoBranches {
-			w := targets[r.idx]
-			if w.Branch != "" {
-				if err := run(repoPath, "branch", "-D", w.Branch); err != nil {
-					failures = append(failures, Failure{Path: w.Path, Op: OpBranch, Err: err})
-				}
+		removeFailures, removed := removeWorktree(repoPath, w)
+		failures = append(failures, removeFailures...)
+		if removed && alsoBranches && w.Branch != "" {
+			if err := run(repoPath, "branch", "-D", w.Branch); err != nil {
+				failures = append(failures, Failure{Path: w.Path, Op: OpBranch, Err: err})
 			}
 		}
 	}
@@ -110,23 +78,20 @@ func Delete(repoPath string, targets []worktree.Worktree, alsoBranches bool) []F
 	return failures
 }
 
-// removeWorktree unlocks (if locked) and force-removes a single target. It
-// never touches refs, so it is safe to run alongside other removeWorktree
-// calls against the same repository.
-func removeWorktree(repoPath string, idx int, w worktree.Worktree) removal {
-	r := removal{idx: idx}
+// removeWorktree unlocks (if locked) and force-removes a single target,
+// returning any failures and whether the remove succeeded.
+func removeWorktree(repoPath string, w worktree.Worktree) (failures []Failure, removed bool) {
 	if slices.Contains(w.Badges, worktree.BadgeLocked) {
 		if err := run(repoPath, "worktree", "unlock", w.Path); err != nil {
-			r.failures = append(r.failures, Failure{Path: w.Path, Op: OpUnlock, Err: err})
+			failures = append(failures, Failure{Path: w.Path, Op: OpUnlock, Err: err})
 			// Continue to remove anyway — --force may still succeed.
 		}
 	}
 	if err := run(repoPath, "worktree", "remove", "--force", w.Path); err != nil {
-		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: err})
-		return r
+		failures = append(failures, Failure{Path: w.Path, Op: OpRemove, Err: err})
+		return failures, false
 	}
-	r.removed = true
-	return r
+	return failures, true
 }
 
 func run(repoPath string, args ...string) error {

@@ -139,7 +139,7 @@ func TestDeleteFailureOrderMatchesTargets(t *testing.T) {
 	}
 }
 
-func TestDeleteRemovesManyWorktreesInParallel(t *testing.T) {
+func TestDeleteRemovesManyWorktrees(t *testing.T) {
 	requireGit(t)
 	repo, _ := setupWorktree(t, "first")
 	targets := []worktree.Worktree{{Path: filepath.Join(filepath.Dir(repo), "wt-first"), Branch: "first"}}
