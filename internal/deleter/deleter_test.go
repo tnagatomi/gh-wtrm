@@ -159,6 +159,24 @@ func TestDeleteRemovesManyWorktrees(t *testing.T) {
 	}
 }
 
+func TestDeleteNeverRemovesRepoItself(t *testing.T) {
+	requireGit(t)
+	repo, _ := setupWorktree(t, "feat")
+
+	// A repoPath mistakenly handed in as a target must be rejected by the
+	// guard, never recursively deleted by the deleter itself.
+	failures := Delete(repo, []worktree.Worktree{{Path: repo, Branch: "main"}}, false)
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("expected one remove failure for the repo target, got %v", failures)
+	}
+	if _, err := os.Stat(repo); err != nil {
+		t.Errorf("repo directory must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Errorf("repo .git must survive: %v", err)
+	}
+}
+
 func setupWorktree(t *testing.T, branch string) (repo, wtPath string) {
 	t.Helper()
 	repo = filepath.Join(t.TempDir(), "repo")
