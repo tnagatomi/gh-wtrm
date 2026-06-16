@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "semanticCommits": "enabled",
+  "semanticCommitScope": null,
+  "minimumReleaseAge": "7 days",
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "packageRules": [
+    {
+      "description": "Keep golangci-lint in sync across mise.toml and the lint workflow",
+      "matchPackageNames": [
+        "golangci-lint",
+        "golangci/golangci-lint",
+        "/golangci-lint/"
+      ],
+      "groupName": "golangci-lint"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Track the golangci-lint version pinned in golangci-lint-action",
+      "customType": "regex",
+      "fileMatch": [
+        "^\\.github/workflows/lint\\.yml$"
+      ],
+      "matchStrings": [
+        "version: (?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases"
+    }
+  ]
+}
