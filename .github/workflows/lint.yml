@@ -1,0 +1,26 @@
+# Runs golangci-lint on every PR and on push to main. Separate from the test
+# workflow so a slow lint pass does not gate test feedback and a lint failure
+# does not hide a test failure (or vice versa).
+
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false # golangci-lint-action manages its own cache
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
