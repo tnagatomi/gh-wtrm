@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -156,6 +157,38 @@ func TestDeleteRemovesManyWorktrees(t *testing.T) {
 	}
 	if listWorktrees(t, repo) != 1 {
 		t.Errorf("porcelain should list only the primary after removing all")
+	}
+}
+
+func TestDeleteParallelPreservesOrderAndRemovesAll(t *testing.T) {
+	requireGit(t)
+	// Force the worker pool to drain through a single worker so the queueing
+	// path (more targets than workers) is exercised deterministically.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	repo, first := setupWorktree(t, "first")
+	targets := []worktree.Worktree{
+		{Path: "/nonexistent/a", Branch: "a"},
+		{Path: first, Branch: "first"},
+	}
+	for i := range 5 {
+		branch := "p" + string(rune('a'+i))
+		wtPath := filepath.Join(filepath.Dir(repo), "wt-"+branch)
+		mustRun(t, "git", "-C", repo, "worktree", "add", "-q", "-b", branch, wtPath)
+		targets = append(targets, worktree.Worktree{Path: wtPath, Branch: branch})
+	}
+	targets = append(targets, worktree.Worktree{Path: "/nonexistent/b", Branch: "b"})
+
+	failures := Delete(repo, targets, false)
+
+	if len(failures) != 2 {
+		t.Fatalf("expected two failures for the nonexistent targets, got %d: %v", len(failures), failures)
+	}
+	if failures[0].Path != "/nonexistent/a" || failures[1].Path != "/nonexistent/b" {
+		t.Errorf("failures must stay in targets order despite parallel removal: %v", failures)
+	}
+	if listWorktrees(t, repo) != 1 {
+		t.Errorf("all real worktrees should be removed, leaving only the primary")
 	}
 }
 
