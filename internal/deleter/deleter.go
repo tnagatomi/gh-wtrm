@@ -83,9 +83,9 @@ type result struct {
 func Delete(repoPath string, targets []worktree.Worktree, alsoBranches bool) []Failure {
 	results := make([]result, len(targets))
 
-	// git's authoritative set of this repo's linked worktrees, read once and
+	// git's authoritative view of this repo's worktrees, captured once and
 	// shared read-only with the parallel removal workers.
-	registered := registeredWorktrees(repoPath)
+	guard := newWorktreeGuard(repoPath)
 
 	// Phase A: release locks first (serial git metadata) — a still-locked
 	// worktree keeps the later prune from reclaiming its metadata.
@@ -99,7 +99,7 @@ func Delete(repoPath string, targets []worktree.Worktree, alsoBranches bool) []F
 	}
 
 	// Phase B: clear working directories in parallel.
-	clearDirs(registered, repoPath, targets, results)
+	clearDirs(guard, targets, results)
 
 	// One repo-wide prune drops the metadata for every directory we cleared
 	// (or that was already missing). Prune is serial and runs at most once.
@@ -145,7 +145,7 @@ func Delete(repoPath string, targets []worktree.Worktree, alsoBranches bool) []F
 // distinct index, so writes to results never overlap; failures are reassembled
 // in targets order by the caller. The work is purely filesystem-side — no git
 // state is touched here — so concurrency is safe.
-func clearDirs(registered map[string]bool, repoPath string, targets []worktree.Worktree, results []result) {
+func clearDirs(guard worktreeGuard, targets []worktree.Worktree, results []result) {
 	workers := min(runtime.GOMAXPROCS(0), len(targets))
 	if workers < 1 {
 		return
@@ -156,7 +156,7 @@ func clearDirs(registered map[string]bool, repoPath string, targets []worktree.W
 	for range workers {
 		wg.Go(func() {
 			for i := range indices {
-				r := clearWorktreeDir(registered, repoPath, targets[i])
+				r := clearWorktreeDir(guard, targets[i])
 				results[i].failures = append(results[i].failures, r.failures...)
 				results[i].removed = r.removed
 				results[i].noDir = r.noDir
@@ -174,13 +174,13 @@ func clearDirs(registered map[string]bool, repoPath string, targets []worktree.W
 // needs only pruning; a guarded directory is removed with os.RemoveAll;
 // anything the guard rejects is recorded as a remove failure. It performs no
 // git operations, so it is safe to call concurrently across targets.
-func clearWorktreeDir(registered map[string]bool, repoPath string, w worktree.Worktree) result {
+func clearWorktreeDir(guard worktreeGuard, w worktree.Worktree) result {
 	var r result
 	if slices.Contains(w.Badges, worktree.BadgeNoDir) {
 		r.noDir = true
 		return r
 	}
-	if !isLinkedWorktree(registered, repoPath, w.Path) {
+	if !guard.allowsRemoval(w.Path) {
 		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errNotLinkedWorktree})
 		return r
 	}

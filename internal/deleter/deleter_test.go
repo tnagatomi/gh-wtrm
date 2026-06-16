@@ -282,6 +282,35 @@ func TestDeleteRefusesCurrentlyLockedWorktree(t *testing.T) {
 	}
 }
 
+func TestDeleteRejectsReoccupiedWorktreePath(t *testing.T) {
+	requireGit(t)
+	repo, wtPath := setupWorktree(t, "feat")
+	// A separate repository whose worktree's gitdir pointer we graft onto our
+	// target, simulating the path being reoccupied by a foreign gitdir-backed
+	// directory after repo's worktree list was captured. repo still lists the
+	// path, but its .git now points to the other repo's admin dir.
+	_, foreign := setupWorktree(t, "other")
+	foreignDotGit, err := os.ReadFile(filepath.Join(foreign, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, ".git"), foreignDotGit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "important.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	failures := Delete(repo, []worktree.Worktree{{Path: wtPath, Branch: "feat"}}, false)
+
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("a path whose gitdir no longer belongs to repo must be refused, got %v", failures)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "important.txt")); err != nil {
+		t.Errorf("a reoccupied directory must not be deleted: %v", err)
+	}
+}
+
 func TestDeleteNeverRemovesRepoItself(t *testing.T) {
 	requireGit(t)
 	repo, _ := setupWorktree(t, "feat")

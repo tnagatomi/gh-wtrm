@@ -5,6 +5,7 @@ package git
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -61,6 +62,22 @@ func ParseCommitTimes(out string) map[string]time.Time {
 // repository containing dir.
 func WorktreeList(dir string) (string, error) {
 	return run(dir, "worktree", "list", "--porcelain")
+}
+
+// CommonDir returns the absolute path of the repository's common git
+// directory (the shared .git that every linked worktree's admin data lives
+// under). git reports it relative to dir for the primary checkout, so a
+// relative result is anchored to dir.
+func CommonDir(dir string) (string, error) {
+	out, err := run(dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	p := strings.TrimSpace(out)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return p, nil
 }
 
 // Toplevel returns the absolute path of the worktree containing dir, i.e.
