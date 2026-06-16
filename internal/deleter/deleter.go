@@ -4,12 +4,24 @@
 package deleter
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"runtime"
 	"slices"
+	"sync"
 
 	"github.com/tnagatomi/gh-wtrm/internal/worktree"
 )
+
+// errNotLinkedWorktree marks a target whose directory we declined to remove
+// ourselves because the guard could not confirm it is a linked worktree.
+var errNotLinkedWorktree = errors.New("path is not a linked worktree; refusing to remove")
+
+// errLockedWorktree marks a target left untouched because it is still locked
+// at removal time, mirroring git's refusal to remove a locked worktree.
+var errLockedWorktree = errors.New("worktree is locked; refusing to remove")
 
 // Op names the git operation that failed; carried on Failure so callers can
 // group failures by kind without parsing the error message.
@@ -35,63 +47,153 @@ func (f Failure) Error() string {
 	return fmt.Sprintf("%s %s: %v", f.Op, f.Path, f.Err)
 }
 
+// result accumulates the outcome of processing a single target so failures
+// can be reassembled in targets order after the phased work completes.
+type result struct {
+	failures []Failure
+	removed  bool // a present directory was cleared: branch-eligible and prunable
+	noDir    bool // the directory was already gone: prunable but not branch-eligible
+}
+
 // Delete runs the deletion plan against targets in repoPath. Each target is
 // independent; a failure on one does not stop the rest, and failures surface
 // in targets order.
 //
 // Worktree removal is always forced (gh-poi semantics): the safety model has
 // already cleared each safe target, and a manually selected dirty target is
-// removed deliberately. Locked worktrees are unlocked first since a single
-// --force does not release a lock. Branch deletion (when alsoBranches) always
-// uses -D: a PR merge is not necessarily a local fast-forward merge (squash
-// and rebase merges leave the local branch "unmerged"), so -d would wrongly
-// refuse. The safety model already proved the work is in a merged PR.
+// removed deliberately. Locked worktrees are unlocked first since a lock keeps
+// `git worktree prune` from reclaiming the metadata. Branch deletion (when
+// alsoBranches) always uses -D: a PR merge is not necessarily a local
+// fast-forward merge (squash and rebase merges leave the local branch
+// "unmerged"), so -d would wrongly refuse. The safety model already proved the
+// work is in a merged PR.
 //
-// Removal runs serially: `git worktree remove` validates and rewrites the
-// repo-wide .git/worktrees directory on every call, so concurrent removals
-// against the same repository race (one remove enumerates entries while
-// another is deleting one). Interactive deletes are a handful of worktrees,
-// so serial removal costs nothing. A single `git worktree prune` is appended
-// once when any target was no-dir, since prune is repo-wide.
+// The expensive part of removing a worktree is the recursive deletion of its
+// working directory (node_modules and the like), not git's metadata rewrite.
+// So instead of `git worktree remove` — which couples both and rewrites the
+// repo-wide .git/worktrees directory on every call — we delete the directory
+// ourselves with os.RemoveAll and then issue a single repo-wide
+// `git worktree prune` to drop the metadata for everything we cleared. The
+// guard (isLinkedWorktree) stands in for the validation git would have done.
+//
+// All git metadata mutations (unlock, prune, branch) run serially, since they
+// race on the repo-wide .git/worktrees directory. Only the directory removal
+// is parallelized — it touches independent file trees and no git state — so a
+// batch of large worktrees is cleared concurrently rather than one at a time.
 func Delete(repoPath string, targets []worktree.Worktree, alsoBranches bool) []Failure {
-	var failures []Failure
-	anyNoDir := false
-	for _, w := range targets {
-		if slices.Contains(w.Badges, worktree.BadgeNoDir) {
-			anyNoDir = true
-			continue
-		}
-		removeFailures, removed := removeWorktree(repoPath, w)
-		failures = append(failures, removeFailures...)
-		if removed && alsoBranches && w.Branch != "" {
-			if err := run(repoPath, "branch", "-D", w.Branch); err != nil {
-				failures = append(failures, Failure{Path: w.Path, Op: OpBranch, Err: err})
+	results := make([]result, len(targets))
+
+	// git's authoritative view of this repo's worktrees, captured once and
+	// shared read-only with the parallel removal workers.
+	guard := newWorktreeGuard(repoPath)
+
+	// Phase A: release locks first (serial git metadata) — a still-locked
+	// worktree keeps the later prune from reclaiming its metadata.
+	for i, w := range targets {
+		if slices.Contains(w.Badges, worktree.BadgeLocked) {
+			if err := run(repoPath, "worktree", "unlock", w.Path); err != nil {
+				results[i].failures = append(results[i].failures, Failure{Path: w.Path, Op: OpUnlock, Err: err})
+				// Continue anyway — the directory removal does not need the lock.
 			}
 		}
 	}
 
-	if anyNoDir {
-		if err := run(repoPath, "worktree", "prune"); err != nil {
-			failures = append(failures, Failure{Path: repoPath, Op: OpPrune, Err: err})
+	// Phase B: clear working directories in parallel.
+	clearDirs(guard, targets, results)
+
+	// One repo-wide prune drops the metadata for every directory we cleared
+	// (or that was already missing). Prune is serial and runs at most once.
+	needPrune := false
+	for i := range results {
+		if results[i].removed || results[i].noDir {
+			needPrune = true
 		}
+	}
+	var pruneFailure *Failure
+	if needPrune {
+		if err := run(repoPath, "worktree", "prune"); err != nil {
+			pruneFailure = &Failure{Path: repoPath, Op: OpPrune, Err: err}
+		}
+	}
+
+	// Branch deletion applies only to present-dir worktrees we actually
+	// removed, matching prior behavior where missing-dir targets never had
+	// their branches deleted.
+	if alsoBranches {
+		for i, w := range targets {
+			if results[i].removed && w.Branch != "" {
+				if err := run(repoPath, "branch", "-D", w.Branch); err != nil {
+					results[i].failures = append(results[i].failures, Failure{Path: w.Path, Op: OpBranch, Err: err})
+				}
+			}
+		}
+	}
+
+	// Reassemble in targets order; the repo-wide prune failure trails last.
+	var failures []Failure
+	for i := range results {
+		failures = append(failures, results[i].failures...)
+	}
+	if pruneFailure != nil {
+		failures = append(failures, *pruneFailure)
 	}
 	return failures
 }
 
-// removeWorktree unlocks (if locked) and force-removes a single target,
-// returning any failures and whether the remove succeeded.
-func removeWorktree(repoPath string, w worktree.Worktree) (failures []Failure, removed bool) {
-	if slices.Contains(w.Badges, worktree.BadgeLocked) {
-		if err := run(repoPath, "worktree", "unlock", w.Path); err != nil {
-			failures = append(failures, Failure{Path: w.Path, Op: OpUnlock, Err: err})
-			// Continue to remove anyway — --force may still succeed.
-		}
+// clearDirs clears every target's working directory concurrently, bounded by
+// a worker pool of GOMAXPROCS (capped at the target count). Each worker owns a
+// distinct index, so writes to results never overlap; failures are reassembled
+// in targets order by the caller. The work is purely filesystem-side — no git
+// state is touched here — so concurrency is safe.
+func clearDirs(guard worktreeGuard, targets []worktree.Worktree, results []result) {
+	workers := min(runtime.GOMAXPROCS(0), len(targets))
+	if workers < 1 {
+		return
 	}
-	if err := run(repoPath, "worktree", "remove", "--force", w.Path); err != nil {
-		failures = append(failures, Failure{Path: w.Path, Op: OpRemove, Err: err})
-		return failures, false
+
+	indices := make(chan int)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for i := range indices {
+				r := clearWorktreeDir(guard, targets[i])
+				results[i].failures = append(results[i].failures, r.failures...)
+				results[i].removed = r.removed
+				results[i].noDir = r.noDir
+			}
+		})
 	}
-	return failures, true
+	for i := range targets {
+		indices <- i
+	}
+	close(indices)
+	wg.Wait()
+}
+
+// clearWorktreeDir clears a single target's working directory: a no-dir target
+// needs only pruning; a guarded directory is removed with os.RemoveAll;
+// anything the guard rejects is recorded as a remove failure. It performs no
+// git operations, so it is safe to call concurrently across targets.
+func clearWorktreeDir(guard worktreeGuard, w worktree.Worktree) result {
+	var r result
+	if slices.Contains(w.Badges, worktree.BadgeNoDir) {
+		r.noDir = true
+		return r
+	}
+	if !guard.allowsRemoval(w.Path) {
+		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errNotLinkedWorktree})
+		return r
+	}
+	if isLockedWorktree(w.Path) {
+		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errLockedWorktree})
+		return r
+	}
+	if err := os.RemoveAll(w.Path); err != nil {
+		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: err})
+		return r
+	}
+	r.removed = true
+	return r
 }
 
 func run(repoPath string, args ...string) error {
