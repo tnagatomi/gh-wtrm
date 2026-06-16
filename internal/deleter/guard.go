@@ -1,6 +1,8 @@
 package deleter
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -12,8 +14,11 @@ import (
 // linked worktrees — git's own authoritative view, re-read at deletion time so
 // the guard reflects current state rather than the loader's earlier snapshot.
 // The primary worktree (porcelain index 0) is excluded: it is the repository
-// itself and must never be removed. A nil set (e.g. git could not list) means
-// nothing qualifies for self-directed removal, which fails safe.
+// itself and must never be removed. Prunable entries are excluded too — git
+// considers their working tree gone or broken, so they are pruned, not
+// recursively removed; treating one as live could delete an unrelated
+// directory that has since taken its path. A nil set (e.g. git could not list)
+// means nothing qualifies for self-directed removal, which fails safe.
 func registeredWorktrees(repoPath string) map[string]bool {
 	out, err := git.WorktreeList(repoPath)
 	if err != nil {
@@ -22,8 +27,8 @@ func registeredWorktrees(repoPath string) map[string]bool {
 	wts := worktree.Parse(out)
 	set := make(map[string]bool, len(wts))
 	for i, w := range wts {
-		if i == 0 || w.Path == "" {
-			continue // skip the primary worktree
+		if i == 0 || w.Path == "" || w.Prunable {
+			continue // skip the primary and any prunable worktree
 		}
 		set[resolvePath(w.Path)] = true
 	}
@@ -44,6 +49,12 @@ func registeredWorktrees(repoPath string) map[string]bool {
 // any ancestor of it, the filesystem root, and the empty path independently of
 // the git listing, so the critical "never delete the repo" invariant does not
 // rely on parsing.
+//
+// A final on-disk recheck confirms <path>/.git is still a gitdir pointer file,
+// mirroring git worktree remove's own validation. This closes the window
+// between listing and removal: if the directory has been replaced by a plain
+// directory (its .git pointer gone), it is rejected rather than recursively
+// removed.
 func isLinkedWorktree(registered map[string]bool, repoPath, path string) bool {
 	if path == "" {
 		return false
@@ -61,7 +72,25 @@ func isLinkedWorktree(registered map[string]bool, repoPath, path string) bool {
 			return false
 		}
 	}
-	return registered[resolvePath(path)]
+	if !registered[resolvePath(path)] {
+		return false
+	}
+	return hasGitdirPointer(cleaned)
+}
+
+// hasGitdirPointer reports whether dir/.git currently exists as a regular file
+// beginning with "gitdir:", the hallmark of a live linked worktree.
+func hasGitdirPointer(dir string) bool {
+	dotGit := filepath.Join(dir, ".git")
+	info, err := os.Lstat(dotGit)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	data, err := os.ReadFile(dotGit)
+	if err != nil {
+		return false
+	}
+	return bytes.HasPrefix(data, []byte("gitdir:"))
 }
 
 // resolvePath canonicalizes p through symlinks so paths from `git worktree

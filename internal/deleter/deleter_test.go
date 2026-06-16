@@ -235,6 +235,35 @@ func TestDeleteRejectsForeignWorktree(t *testing.T) {
 	}
 }
 
+func TestDeleteRejectsWorktreeReplacedByPlainDir(t *testing.T) {
+	requireGit(t)
+	repo, wtPath := setupWorktree(t, "feat")
+
+	// Simulate the worktree directory being swapped for a plain directory
+	// after it was loaded: git still lists the path (now prunable) but its
+	// .git pointer is gone, exactly the case git worktree remove --force
+	// rejects.
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "important.txt"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Passed as a healthy target (no no-dir badge), mimicking a stale load.
+	failures := Delete(repo, []worktree.Worktree{{Path: wtPath, Branch: "feat"}}, false)
+
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("a worktree whose .git pointer is gone must be rejected, got %v", failures)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "important.txt")); err != nil {
+		t.Errorf("the replacement directory must not be deleted: %v", err)
+	}
+}
+
 func TestDeleteNeverRemovesRepoItself(t *testing.T) {
 	requireGit(t)
 	repo, _ := setupWorktree(t, "feat")
