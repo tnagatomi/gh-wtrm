@@ -264,6 +264,24 @@ func TestDeleteRejectsWorktreeReplacedByPlainDir(t *testing.T) {
 	}
 }
 
+func TestDeleteRefusesCurrentlyLockedWorktree(t *testing.T) {
+	requireGit(t)
+	repo, wtPath := setupWorktree(t, "feat")
+	mustRun(t, "git", "-C", repo, "worktree", "lock", wtPath)
+
+	// Locked after the UI built badges, so no BadgeLocked is present: Phase A
+	// never unlocks it. Removal must refuse rather than bypass git's lock
+	// protection, matching git worktree remove --force on a locked worktree.
+	failures := Delete(repo, []worktree.Worktree{{Path: wtPath, Branch: "feat"}}, false)
+
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("a currently locked worktree must be refused, got %v", failures)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("a locked worktree must not be deleted: %v", err)
+	}
+}
+
 func TestDeleteNeverRemovesRepoItself(t *testing.T) {
 	requireGit(t)
 	repo, _ := setupWorktree(t, "feat")

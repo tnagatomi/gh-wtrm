@@ -1,7 +1,6 @@
 package deleter
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,22 +74,48 @@ func isLinkedWorktree(registered map[string]bool, repoPath, path string) bool {
 	if !registered[resolvePath(path)] {
 		return false
 	}
-	return hasGitdirPointer(cleaned)
+	return worktreeAdminDir(cleaned) != ""
 }
 
-// hasGitdirPointer reports whether dir/.git currently exists as a regular file
-// beginning with "gitdir:", the hallmark of a live linked worktree.
-func hasGitdirPointer(dir string) bool {
+// worktreeAdminDir resolves dir/.git and returns the linked-worktree admin
+// directory it points to (e.g. <repo>/.git/worktrees/<id>), or "" if dir/.git
+// is not currently a "gitdir:" pointer file. A regular .git pointer file is
+// the hallmark of a live linked worktree, so a non-empty result also confirms
+// existence.
+func worktreeAdminDir(dir string) string {
 	dotGit := filepath.Join(dir, ".git")
 	info, err := os.Lstat(dotGit)
 	if err != nil || !info.Mode().IsRegular() {
-		return false
+		return ""
 	}
 	data, err := os.ReadFile(dotGit)
 	if err != nil {
+		return ""
+	}
+	pointer, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+	if !ok {
+		return ""
+	}
+	admin := strings.TrimSpace(pointer)
+	if !filepath.IsAbs(admin) {
+		admin = filepath.Join(dir, admin)
+	}
+	return filepath.Clean(admin)
+}
+
+// isLockedWorktree reports whether the linked worktree at path currently
+// carries git's lock marker. git refuses to remove a locked worktree without a
+// double --force, so self-directed removal must honor the same lock: this
+// recheck runs immediately before os.RemoveAll, after Phase A has had its
+// chance to release locks, so it catches both a failed unlock and a lock added
+// after the worktree list was built.
+func isLockedWorktree(path string) bool {
+	admin := worktreeAdminDir(path)
+	if admin == "" {
 		return false
 	}
-	return bytes.HasPrefix(data, []byte("gitdir:"))
+	_, err := os.Lstat(filepath.Join(admin, "locked"))
+	return err == nil
 }
 
 // resolvePath canonicalizes p through symlinks so paths from `git worktree

@@ -19,6 +19,10 @@ import (
 // ourselves because the guard could not confirm it is a linked worktree.
 var errNotLinkedWorktree = errors.New("path is not a linked worktree; refusing to remove")
 
+// errLockedWorktree marks a target left untouched because it is still locked
+// at removal time, mirroring git's refusal to remove a locked worktree.
+var errLockedWorktree = errors.New("worktree is locked; refusing to remove")
+
 // Op names the git operation that failed; carried on Failure so callers can
 // group failures by kind without parsing the error message.
 type Op string
@@ -178,6 +182,10 @@ func clearWorktreeDir(registered map[string]bool, repoPath string, w worktree.Wo
 	}
 	if !isLinkedWorktree(registered, repoPath, w.Path) {
 		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errNotLinkedWorktree})
+		return r
+	}
+	if isLockedWorktree(w.Path) {
+		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errLockedWorktree})
 		return r
 	}
 	if err := os.RemoveAll(w.Path); err != nil {
