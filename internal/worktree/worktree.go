@@ -50,6 +50,7 @@ type Badge int
 
 const (
 	BadgePrimary Badge = iota
+	BadgeCurrent
 	BadgeUncommitted
 	BadgeUnpushed
 	BadgeLocked
@@ -74,6 +75,8 @@ func (b Badge) String() string {
 	switch b {
 	case BadgePrimary:
 		return "primary"
+	case BadgeCurrent:
+		return "current"
 	case BadgeUncommitted:
 		return "uncommitted"
 	case BadgeUnpushed:
