@@ -56,3 +56,25 @@ func TestGuardRejectsEmptyPath(t *testing.T) {
 		t.Errorf("an empty path must be rejected")
 	}
 }
+
+func TestGuardDetectsCurrentWorktree(t *testing.T) {
+	requireGit(t)
+	repo, wtPath := setupWorktree(t, "feat")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Logf("restore cwd: %v", err)
+		}
+	}()
+	if err := os.Chdir(wtPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if !newWorktreeGuard(repo).isCurrentWorktree(wtPath) {
+		t.Errorf("the worktree containing the CWD should be detected as current")
+	}
+}
