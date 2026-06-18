@@ -56,6 +56,22 @@ func TestSpaceNoOpOnPrimary(t *testing.T) {
 	}
 }
 
+func TestSpaceNoOpOnCurrent(t *testing.T) {
+	wts := []worktree.Worktree{
+		{Path: "/repo", Branch: "main", Badges: []worktree.Badge{worktree.BadgePrimary}},
+		{Path: "/repo/wt/cur", Branch: "feat-cur", Badges: []worktree.Badge{worktree.BadgeCurrent, worktree.BadgePRMerged}},
+	}
+	m := screenModel(t, wts)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) // cursor at the current worktree
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	if len(m.(Model).selected) != 0 {
+		t.Fatalf("space on the current worktree selected something: %v", m.(Model).selected)
+	}
+	if !strings.Contains(m.View().Content, "[current]") {
+		t.Errorf("view should render the [current] badge:\n%s", m.View().Content)
+	}
+}
+
 func TestSafeSelectPicksOnlyDeletable(t *testing.T) {
 	m := screenModel(t, sampleWorktrees())
 	m, _ = m.Update(tea.KeyPressMsg{Text: "s", Code: 's'})

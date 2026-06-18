@@ -21,13 +21,17 @@ type worktreeGuard struct {
 	// registered is the set of symlink-resolved paths git currently lists as
 	// this repo's linked worktrees.
 	registered map[string]bool
+	// cwd is the symlink-resolved process working directory captured once at
+	// guard construction, used to refuse removing the worktree the process is
+	// standing in. Empty when getcwd failed, which disables the check.
+	cwd string
 }
 
 // newWorktreeGuard captures git's authoritative view of repoPath's linked
 // worktrees, re-read at deletion time so the guard reflects current state
 // rather than the loader's earlier snapshot.
 func newWorktreeGuard(repoPath string) worktreeGuard {
-	g := worktreeGuard{repoPath: repoPath, registered: registeredWorktrees(repoPath)}
+	g := worktreeGuard{repoPath: repoPath, registered: registeredWorktrees(repoPath), cwd: resolveCwd()}
 	if commonDir, err := git.CommonDir(repoPath); err == nil {
 		g.worktreesDir = resolvePath(filepath.Join(commonDir, "worktrees"))
 	}
@@ -157,6 +161,39 @@ func isLockedWorktree(path string) bool {
 	}
 	_, err := os.Lstat(filepath.Join(admin, "locked"))
 	return err == nil
+}
+
+// isCurrentWorktree reports whether path is the worktree the process is
+// standing in: removing it would delete the process's own CWD, which breaks
+// the post-delete reload (git -C <gone> exits 128) and leaves the user's
+// shell in a deleted directory. The check is CWD-based, not git-based, so it
+// holds for any caller of Delete regardless of how it gathered targets.
+func (g worktreeGuard) isCurrentWorktree(path string) bool {
+	if g.cwd == "" || path == "" {
+		return false
+	}
+	cleaned := resolvePath(path)
+	// Refuse when the CWD sits at or below cleaned, i.e. cleaned is the CWD
+	// or an ancestor of it: filepath.Rel then yields a path that does not
+	// climb upward. A sibling or unrelated path climbs and is left alone.
+	// Both sides are symlink-resolved so a symlinked temp root (e.g. macOS
+	// /var -> /private/var) compares equal.
+	if rel, err := filepath.Rel(cleaned, g.cwd); err == nil {
+		upward := rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		return !upward
+	}
+	return false
+}
+
+// resolveCwd returns the symlink-resolved process working directory, or "" if
+// it cannot be determined (in which case the current-worktree check is
+// disabled, failing safe by other guards).
+func resolveCwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return resolvePath(wd)
 }
 
 // resolvePath canonicalizes p through symlinks so paths from `git worktree

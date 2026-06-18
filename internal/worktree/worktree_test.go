@@ -116,6 +116,7 @@ func TestBadgeString(t *testing.T) {
 		want string
 	}{
 		{BadgePrimary, "primary"},
+		{BadgeCurrent, "current"},
 		{BadgeUncommitted, "uncommitted"},
 		{BadgeUnpushed, "unpushed"},
 		{BadgeLocked, "locked"},

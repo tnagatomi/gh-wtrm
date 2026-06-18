@@ -357,6 +357,66 @@ func TestDeleteNeverRemovesRepoItself(t *testing.T) {
 	}
 }
 
+func TestDeleteRefusesCurrentWorktree(t *testing.T) {
+	requireGit(t)
+	repo, wtPath := setupWorktree(t, "feat")
+
+	// Stand inside the target: the deleter must refuse it rather than remove
+	// the process's own CWD, which would break the post-delete reload.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Logf("restore cwd: %v", err)
+		}
+	}()
+	if err := os.Chdir(wtPath); err != nil {
+		t.Fatal(err)
+	}
+
+	failures := Delete(repo, []worktree.Worktree{{Path: wtPath, Branch: "feat"}}, false)
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("the current worktree must be refused with a remove failure, got %v", failures)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("the current worktree must not be deleted: %v", err)
+	}
+}
+
+func TestDeleteRefusesWorktreeWhenCwdIsSubdir(t *testing.T) {
+	requireGit(t)
+	repo, wtPath := setupWorktree(t, "feat")
+	sub := filepath.Join(wtPath, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Standing in a subdirectory of the target is the same hazard: the CWD
+	// vanishes with the worktree, so the reload's git -C <gone> would 128.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Logf("restore cwd: %v", err)
+		}
+	}()
+	if err := os.Chdir(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	failures := Delete(repo, []worktree.Worktree{{Path: wtPath, Branch: "feat"}}, false)
+	if len(failures) != 1 || failures[0].Op != OpRemove {
+		t.Fatalf("a worktree containing the CWD must be refused, got %v", failures)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("the worktree containing the CWD must not be deleted: %v", err)
+	}
+}
+
 func setupWorktree(t *testing.T, branch string) (repo, wtPath string) {
 	t.Helper()
 	repo = filepath.Join(t.TempDir(), "repo")

@@ -23,6 +23,11 @@ var errNotLinkedWorktree = errors.New("path is not a linked worktree; refusing t
 // at removal time, mirroring git's refusal to remove a locked worktree.
 var errLockedWorktree = errors.New("worktree is locked; refusing to remove")
 
+// errCurrentWorktree marks a target left untouched because it is the process's
+// own working directory; removing it would break the post-delete reload and
+// strand the user's shell in a deleted directory.
+var errCurrentWorktree = errors.New("worktree is the current working directory; refusing to remove")
+
 // Op names the git operation that failed; carried on Failure so callers can
 // group failures by kind without parsing the error message.
 type Op string
@@ -182,6 +187,10 @@ func clearWorktreeDir(guard worktreeGuard, w worktree.Worktree) result {
 	}
 	if !guard.allowsRemoval(w.Path) {
 		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errNotLinkedWorktree})
+		return r
+	}
+	if guard.isCurrentWorktree(w.Path) {
+		r.failures = append(r.failures, Failure{Path: w.Path, Op: OpRemove, Err: errCurrentWorktree})
 		return r
 	}
 	if isLockedWorktree(w.Path) {

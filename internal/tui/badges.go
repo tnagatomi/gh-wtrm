@@ -13,6 +13,7 @@ import (
 
 var worktreeRowStyles = map[worktree.Badge]lipgloss.Style{
 	worktree.BadgePrimary:     lipgloss.NewStyle().Foreground(adaptive("240", "245")),
+	worktree.BadgeCurrent:     lipgloss.NewStyle().Foreground(adaptive("240", "245")),
 	worktree.BadgePRMerged:    lipgloss.NewStyle().Foreground(adaptive("28", "82")),
 	worktree.BadgePROpen:      lipgloss.NewStyle().Foreground(adaptive("33", "75")),
 	worktree.BadgePRClosed:    lipgloss.NewStyle().Foreground(adaptive("130", "220")),
@@ -37,14 +38,18 @@ var worktreeRowBadgePriority = []worktree.Badge{
 	worktree.BadgePROpen,
 	worktree.BadgePRClosed,
 	worktree.BadgeNoDir,
+	worktree.BadgeCurrent,
 	worktree.BadgePrimary,
 	worktree.BadgePRMerged,
 }
 
-// isSelectable returns false for the primary worktree, which is never
-// eligible for deletion.
+// isSelectable returns false for the primary worktree and the worktree the
+// user is standing in, neither of which is ever eligible for deletion — git
+// itself refuses to remove the worktree you are in, and the safety model
+// marks both NotDeletable.
 func isSelectable(w worktree.Worktree) bool {
-	return !slices.Contains(w.Badges, worktree.BadgePrimary)
+	return !slices.Contains(w.Badges, worktree.BadgePrimary) &&
+		!slices.Contains(w.Badges, worktree.BadgeCurrent)
 }
 
 // isSafeToRemove reports whether w is what the `s` bulk-select key should
