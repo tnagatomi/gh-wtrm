@@ -27,12 +27,13 @@ func assemble(wts []worktree.Worktree, currentPath string, info map[string]Info,
 	out := make([]worktree.Worktree, len(wts))
 	for i, w := range wts {
 		isMain := i == 0
+		isCurrent := w.Path == currentPath
 		nfo := info[w.Path]
 		matched := matchPullRequests(w.Branch, prs)
 
 		in := safety.Input{
 			IsMain:            isMain,
-			IsCurrent:         w.Path == currentPath,
+			IsCurrent:         isCurrent,
 			Locked:            w.Locked,
 			NoDir:             nfo.NoDir,
 			HasUntrackedFiles: nfo.HasUntrackedFiles,
@@ -41,7 +42,7 @@ func assemble(wts []worktree.Worktree, currentPath string, info map[string]Info,
 			PullRequests:      matched,
 		}
 		w.Deletable = safety.DeleteStatus(in, state) == safety.Deletable
-		w.Badges = badgesFor(w, isMain, nfo, matched)
+		w.Badges = badgesFor(w, isMain, isCurrent, nfo, matched)
 		out[i] = w
 	}
 	return out
@@ -64,10 +65,13 @@ func matchPullRequests(branch string, prs []gh.PullRequest) []gh.PullRequest {
 
 // badgesFor derives the display badges for a worktree. The PR-state badges
 // reflect the matched pull requests; the working-tree badges reflect info.
-func badgesFor(w worktree.Worktree, isMain bool, nfo Info, prs []gh.PullRequest) []worktree.Badge {
+func badgesFor(w worktree.Worktree, isMain, isCurrent bool, nfo Info, prs []gh.PullRequest) []worktree.Badge {
 	var badges []worktree.Badge
 	if isMain {
 		badges = append(badges, worktree.BadgePrimary)
+	}
+	if isCurrent && !isMain {
+		badges = append(badges, worktree.BadgeCurrent)
 	}
 
 	var hasOpen, hasMerged, hasClosed bool

@@ -107,6 +107,25 @@ func TestAssembleCurrentWorktreeNotDeletable(t *testing.T) {
 	if got[1].Deletable {
 		t.Error("the current worktree must not be deletable")
 	}
+	if !hasBadge(got[1], worktree.BadgeCurrent) {
+		t.Errorf("the current worktree should carry the current badge: %v", got[1].Badges)
+	}
+}
+
+func TestAssemblePrimaryCurrentHasNoCurrentBadge(t *testing.T) {
+	wts := []worktree.Worktree{
+		{Path: "/repo", Branch: "main", Commits: []string{"m"}},
+		{Path: "/repo/wt/feat", Branch: "feat-x", Commits: []string{"head"}},
+	}
+	// Standing in the primary: it is already non-deletable and shows
+	// [primary]; a redundant [current] would only add noise.
+	got := assemble(wts, "/repo", nil, nil, gh.Merged)
+	if !hasBadge(got[0], worktree.BadgePrimary) {
+		t.Errorf("primary worktree missing primary badge: %v", got[0].Badges)
+	}
+	if hasBadge(got[0], worktree.BadgeCurrent) {
+		t.Errorf("primary worktree should not also carry the current badge: %v", got[0].Badges)
+	}
 }
 
 func TestAssembleLockedHasBadgeAndNotDeletable(t *testing.T) {
