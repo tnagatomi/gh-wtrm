@@ -3,6 +3,10 @@
   "extends": [
     "config:recommended"
   ],
+  "timezone": "Asia/Tokyo",
+  "schedule": [
+    "after 5:00am and before 6:00am on saturday"
+  ],
   "semanticCommits": "enabled",
   "semanticCommitScope": null,
   "minimumReleaseAge": "7 days",
